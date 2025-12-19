@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.dist-info/
+
+# Virtualenv / conda
+.venv/
+venv/
+env/
+.conda/
+. Python
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Builds
+build/
+dist/
+
+# OS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+
+# Test / coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Data
+*.xlsx
+*.csv
+*.tsv
