@@ -1,6 +1,6 @@
 from .plate import (
-    measurements_dataframe,
-    plate_design,
+    read_plate_measurements,
+    parse_plate_design,
     merge_measurements_and_conditions,
     drop_col,
     drop_row,
@@ -9,12 +9,12 @@ from .plate import (
     add_smoothed_od,
     add_growth_rate,
     estimate_early_od_threshold,
-    add_max_growth_rate,
+    mu_max_create,
 )
 
 __all__ = [
-    "measurements_dataframe",
-    "plate_design",
+    "read_plate_measurements",
+    "parse_plate_design",
     "merge_measurements_and_conditions",
     "drop_col",
     "drop_row",
@@ -23,5 +23,5 @@ __all__ = [
     "add_smoothed_od",
     "add_growth_rate",
     "estimate_early_od_threshold",
-    "add_max_growth_rate",
+    "mu_max_create",
 ]

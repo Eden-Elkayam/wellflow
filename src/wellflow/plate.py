@@ -1,11 +1,12 @@
 import pandas as pd
 import datetime as dt
 import numpy as np
+from scipy.stats import linregress, t
 
 def _normalize_time(time_col:pd.Series) -> pd.Series:
     """
      Takes in a time series and normalizes its type.
-     """
+    """
     s = time_col.copy()
 
     # Only stringify the one type that hard-crashes
@@ -20,7 +21,7 @@ def _normalize_time(time_col:pd.Series) -> pd.Series:
         raise ValueError(f"Unparseable Time values: {bad}") # raise an error to show them
     return td
 
-def _excel_col_to_index(col: str|int) -> int:
+def convert_excel_col_to_index(col: str | int) -> int:
     """
     Convert Excel column letters to a 0-based index.
      A->0, Z->25, AA->26, AB->27
@@ -34,6 +35,7 @@ def _excel_col_to_index(col: str|int) -> int:
     for ch in s: # loop through the string and
         idx = idx * 26 + (ord(ch) - ord("A") + 1) # Excel columns work like base-26 numbers
     return idx - 1
+
 
 def _read_wide_table(path:str, header_row:int|None, last_row:int|None, start_col:str|None) -> pd.DataFrame:
     """
@@ -51,7 +53,7 @@ def _read_wide_table(path:str, header_row:int|None, last_row:int|None, start_col
         df = pd.read_excel(path, header = header_idx, nrows = n_rows)
 
     if start_col is not None: # Optional - skip columns
-        start_col = _excel_col_to_index(start_col)
+        start_col = convert_excel_col_to_index(start_col)
         df = df.iloc[:, start_col:].copy()
 
     if "Time" not in df.columns: # Make sure you have a time column
@@ -65,7 +67,7 @@ def _read_wide_table(path:str, header_row:int|None, last_row:int|None, start_col
 
     return df
 
-def _wide_to_tidy(wide_df:pd.DataFrame, id_cols=("time", "temperature_c")) -> pd.DataFrame:
+def convert_wide_to_tidy(wide_df:pd.DataFrame, id_cols) -> pd.DataFrame:
     """
     Takes in a wide format dataframe and returns it in a tidy format
     id_cols are the columns that contain info per time point, not per well
@@ -89,13 +91,17 @@ def _add_time_hours(df:pd.DataFrame) -> pd.DataFrame:
 
     return df
 
-def measurements_dataframe(path:str, header_row:int=None, last_row:int=None, start_col:str=None) -> pd.DataFrame:
+def read_plate_measurements(path:str, header_row:int=None, last_row:int=None, start_col:str=None, reader_model="Synergy H1", data_format="wide", id_cols=("time", "temperature_c")) -> pd.DataFrame:
     """
     Taking raw measurement data from the reader and returning it in a tidy format with time_hours
     """
-    df= _wide_to_tidy(_read_wide_table(path,header_row, last_row, start_col))
-    df = _add_time_hours(df)
-    return df
+    if reader_model == "Synergy H1":
+        if data_format == "wide":
+            df= convert_wide_to_tidy(_read_wide_table(path, header_row, last_row, start_col), id_cols)
+            df = _add_time_hours(df)
+            return df
+    else:
+        raise ValueError("Unknown reader model")
 
 def drop_col(df:pd.DataFrame, col_num:int) -> pd.DataFrame:
     """ Takes in a DataFrame and a column. Returns a copy without the target column"""
@@ -113,7 +119,7 @@ def drop_well(df:pd.DataFrame, w:str) -> pd.DataFrame:
     df = df[df["well"] != w]
     return df
 
-def plate_design(path:str) -> pd.DataFrame:
+def parse_plate_design(path:str) -> pd.DataFrame:
     """
     Takes in a path to the design.
     Returns a tidy design table: one row per well (A1, A2, ...), columns are conditions
@@ -163,6 +169,8 @@ def merge_measurements_and_conditions(measurements:pd.DataFrame, conditions:pd.D
 
 def add_blank_value(df:pd.DataFrame, window:int=4, od_col:str="od") -> pd.DataFrame:
     """
+    Takes in a dataframe and a window size and adds a blank value column.
+
     :param df: data frame of measurements you want to blank
     :param window: how many initial points should be used to construct the blank value
     :param od_col: name of the od column to use
@@ -254,61 +262,76 @@ def add_growth_rate(df:pd.DataFrame, window:int=5, epsilon:float= 1e-10, group_b
     df["mu"] = np.nan
     # For each unique well, group them
     for well, group in df.groupby(group_by):
+        group = group.sort_values("time_hours")
         d_values = _calc_growth_rate(group["time_hours"], group[od], window,epsilon)
         df.loc[group.index, "mu"] = d_values
 
     df.sort_values(by=sort_by, inplace=True)
     return df
 
-def estimate_early_od_threshold(df:pd.DataFrame, n_points:int=4, q:float=0.95)-> float:
+def estimate_early_od_threshold(df:pd.DataFrame, od_col:str="od_smooth", n_points:int=4, q:float=0.95)-> float:
     """
     :param df: data frame for which you want to calculate the early od threshold
+    :param od_col: column name of OD series
     :param n_points: across how many of the initial points to calculate the early od threshold
     :param q: above this percentile, the OD is considered to be valid
     :return: the od threshold 
     """
     # subset: first n_points per well
     early = (df.sort_values(["well", "time_hours"]).groupby("well").head(n_points))
-    od_low = early["od"].quantile(q)
+    od_low = early[od_col].quantile(q)
     return od_low
 
-def add_max_growth_rate(df:pd.DataFrame,od_low:float|None=None,od_col:str="od_smooth",mu_col:str="mu",group_by:str|list="well",)-> pd.DataFrame:
-    """
-    :param df: Data frame to add max growth rate
-    :param od_low: bellow this, OD is not considered meaningful so cannot be used to determine max mu
-    :param od_col: defaults to od_smooth but can be the mean of for calculating by condition
-    :param mu_col: name of the growth rate column
-    :param group_by: defaults to calculating by well but can calculate by a condition
-    :return: data frame with max growth rate
-    """
-    group_cols = group_by if isinstance(group_by, list) else [group_by]
-    sort_by = group_cols + ["time_hours"]
+def _calc_mu_max(x, y, w, threshold, epsilon=1e-10):
+    x = np.asarray(x, float)
+    y = np.asarray(y, float)
 
-    # compute threshold once (if needed)
-    if od_low is None:
-        od_low = estimate_early_od_threshold(df, n_points=4, q=0.995)
-    results = []
-    for key, g in df.groupby(group_cols, sort=False):
-        g = g.sort_values("time_hours").copy()
-        g = g.dropna(subset=[mu_col])
-        # apply OD filter
-        g = g[g[od_col] > od_low]
-        # build output row with proper group columns
-        row = dict(zip(group_cols, key)) if isinstance(key, tuple) else {group_cols[0]: key}
+    n = len(x)
+    best_mu = -np.inf
+    std = np.nan
+    for i in range(n):
+        x_slice = x[i:i+w]
+        y_slice = y[i:i+w]
+        valid = np.isfinite(y_slice) # drop NaNs in ys
+        cutoff = max(threshold, epsilon)
 
-        if g.empty:
-            row.update({"mu_max": np.nan, "t_at_mu_max": np.nan})
-            results.append(row)
-            continue
+        if valid.sum() < w or not np.all(y_slice > cutoff):
+            continue    # not enough points to fit a line
+        logy = np.log(y_slice)
+        res = linregress(x_slice, logy)
+        mu = float(res.slope)
+        if mu >best_mu:
+            best_mu = mu
+            std = float(res.stderr)
 
-        idx = g[mu_col].idxmax()
-        row.update({
-            "mu_max": g.loc[idx, mu_col],
-            "t_at_mu_max": g.loc[idx, "time_hours"],})
-        results.append(row)
-    mu_max_df = pd.DataFrame(results)
-    out = df.merge(mu_max_df, on=group_cols, how="left")
-    out.sort_values(by=sort_by, inplace=True)
-    return out
+    # Done looking at all windows, compute the actual values now
+    if best_mu == -np.inf: # If best_mu is still -infinity, no one replaced it so there's no mu max (no one qualified)
+        return np.nan, np.nan, np.nan
+    d_free = w - 2
+    if d_free <= 0 or not np.isfinite(std): return best_mu, np.nan, np.nan # Do I have enough information to compute a valid confidence interval for mu
+
+    tcrit = float(t.ppf(0.975, d_free))
+    mu_low = best_mu - tcrit * std
+    mu_high = best_mu + tcrit * std
+
+    return best_mu, mu_low, mu_high
+
+def mu_max_create(df, group_by = "well", window=5,od="od_smooth", threshold=None):
+    #group_by = group_by if isinstance(group_by, list) else [group_by]
+    if threshold is None:
+        threshold = estimate_early_od_threshold(df, od_col=od, n_points=window, q=0.95)
+    result = pd.DataFrame(columns=['well', 'mu_max', 'mu_low', 'mu_high','tau', 'tau_low', 'tau_high'  ])
+    for key, group in df.groupby(group_by): # For each well/group to calc mumax for
+        group = group.sort_values("time_hours")
+        best_mu, mu_low, mu_high = _calc_mu_max(group["time_hours"], group[od], window, threshold)
+        if best_mu is np.nan and mu_low is np.nan and mu_high is np.nan:
+            print(f"No meaningful growth found for this group:{key}")
+        tau = np.log(2) / best_mu if best_mu > 0 else np.nan
+        tau_2p5 = np.log(2) / mu_high if mu_high > 0 else np.nan  # fastest
+        tau_97p5 = np.log(2) / mu_low if mu_low > 0 else np.nan  # slowest
+
+        result.loc[len(result)] = [key, best_mu, mu_low, mu_high, tau, tau_2p5, tau_97p5]
+    return result
+
 
 

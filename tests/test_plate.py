@@ -1,7 +1,7 @@
 import unittest
-from numpy.ma.testutils import assert_equal
-import plate
 import pandas as pd
+import wellflow.plate as wf
+
 
 class TestPlate(unittest.TestCase):
 
@@ -60,42 +60,36 @@ class TestPlate(unittest.TestCase):
         self.full_with_gr.sort_values(by=["time_hours", "well"], inplace=True)
         self.full_with_gr["mu"] = self.full_with_gr["mu"].round(6)
 
+
     def test_wide_to_tidy(self):
         before = self.rawData.copy()
-        after = plate._wide_to_tidy(before, ["time", "temperature_c"])
+        after = wf.convert_wide_to_tidy(before, ["time", "temperature_c"])
         expected_after = self.tidy.sort_values(by=["time", "well"])
         pd.testing.assert_frame_equal(after, expected_after)
 
     def test_add_time_hours(self):
-        after = plate._add_time_hours(self.tidy)
+        after = wf._add_time_hours(self.tidy)
         pd.testing.assert_frame_equal(after, self.tidy_with_time)
 
     def test_plate_design(self):
         raw = self.rawDesign.copy()
-        after = plate.plate_design(raw)
+        after = wf.parse_plate_design(raw)
         expected = self.design
         pd.testing.assert_frame_equal(after, expected)
 
     def test_blank(self):
-        actual = plate.add_blank_value(self.full_raw, 2)
+        actual = wf.add_blank_value(self.full_raw, 2)
         pd.testing.assert_frame_equal(actual,self.full_with_blanks)
 
     def test_smooth(self):
-        actual = plate.add_smoothed_od(self.full_with_blanks,window=3)
+        actual = wf.add_smoothed_od(self.full_with_blanks,window=3)
         actual["od_smooth"] = actual["od_smooth"].round(6)
         pd.testing.assert_frame_equal(actual,self.full_with_smooth)
 
     def test_mu(self):
-        actual = plate.add_growth_rate(self.full_with_smooth, window=3)
+        actual = wf.add_growth_rate(self.full_with_smooth, window=3)
         actual["mu"] = actual["mu"].round(6)
         pd.testing.assert_frame_equal(actual[["well","mu"]],self.full_with_gr[["well","mu"]])
-
-    # def test_max_mu(self):
-    #     actual = plate.add_max_growth_rate(self.full_with_gr, od_low=0)
-    #     b1_mu_max = actual.loc[actual["well"] == "B1", "mu_max"].unique()
-    #     assert_equal(float(b1_mu_max), 2.772589)
-    #
-
 
 
 if __name__ == "__main__":
