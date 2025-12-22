@@ -166,6 +166,38 @@ def merge_measurements_and_conditions(measurements:pd.DataFrame, conditions:pd.D
     full = measurements.merge(conditions, on="well", how="left")
     return full
 
+def read_flagged_wells(path: str, well_col: str = "well", desc_well:str="notes") -> pd.DataFrame:
+    """
+    Reads an Excel file listing wells to flag
+    Returns a DataFrame with a 'well' column and is_flagged column.
+    """
+    flagged = pd.read_excel(path)
+    flagged = flagged.copy()
+    flagged.rename(columns={well_col: "well", desc_well:"notes"}, inplace=True)
+    # normalize wells like "a1" -> "A1"
+    flagged["well"] = flagged["well"].astype(str).str.strip().str.upper()
+    # drop blanks + duplicates
+    flagged = flagged[flagged["well"].ne("") & flagged["well"].notna()]
+    flagged = flagged.drop_duplicates(subset=["well"])
+    flagged = flagged.sort_values(by=["well"]).reset_index(drop=True)
+    return flagged
+
+def add_flag_column(measurements: pd.DataFrame, flagged_wells: pd.DataFrame|str, well_col: str = "well", desc_well:str="notes") -> pd.DataFrame:
+    """
+    Adds a boolean column (default: is_flagged) to measurements based on whether 'well'
+    appears in flagged_wells['well'].
+    """
+    if isinstance(flagged_wells, pd.DataFrame):
+        df = flagged_wells.copy()
+    elif isinstance(flagged_wells, str):
+        df = read_flagged_wells(flagged_wells, well_col, desc_well)
+    else:
+        raise ValueError("Flagged wells must be a DataFrame or a path")
+    flag_set = set(flagged_wells["well"].astype(str).str.strip().str.upper())
+    measurements["is_flagged"] = df["well"].astype(str).str.strip().str.upper().isin(flag_set)
+    return measurements
+
+
 
 def add_blank_value(df:pd.DataFrame, window:int=4, od_col:str="od") -> pd.DataFrame:
     """
