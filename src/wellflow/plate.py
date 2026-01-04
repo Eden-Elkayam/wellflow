@@ -3,11 +3,19 @@ import datetime as dt
 import numpy as np
 from scipy.stats import linregress, t
 from pathlib import Path
+import warnings
 
-def _normalize_time(time_col:pd.Series) -> pd.Series:
-    """
-     Takes in a time series and normalizes its type.
-    """
+def _normalize_time_to_timedelta(time_col:pd.Series) -> pd.Series:
+    """Normalizes a time column into pandas Timedelta format.
+
+       Args:
+           time_col (pd.Series): The time column to normalize.
+
+       Returns:
+           pd.Database: The normalized time column in a pandas Timedelta format.
+
+       Raises:
+           ValueError: If the Time values cannot be normalized. """
     s = time_col.copy()
 
     # Only stringify the one type that hard-crashes
@@ -23,11 +31,19 @@ def _normalize_time(time_col:pd.Series) -> pd.Series:
     return td
 
 def convert_excel_col_to_index(col: str | int) -> int:
-    """
-    Convert Excel column letters to a 0-based index.
-     A->0, Z->25, AA->26, AB->27
-    """
+    """Convert Excel column letters to a 0-based index.
+         A->0, Z->25, AA->26, AB->27
+         Args:
+             col (str): Excel column letter to convert.
+
+           Returns:
+               int: The 0-based index of the column.
+
+           Raises:
+               ValueError: If the column is invalid. """
     if isinstance(col, int):
+        if col < 0: raise ValueError(f"Invalid Excel column: {col!r}")
+        warnings.warn("Integer column indices are assumed to be 0-based.")
         return col
     s = col.strip().upper() # Remove spaces and ensure upper case
     if not s or any(not ("A" <= ch <= "Z") for ch in s):
@@ -38,34 +54,41 @@ def convert_excel_col_to_index(col: str | int) -> int:
     return idx - 1
 
 
-def _read_wide_table(path:str, header_row:int|None, last_row:int|None, start_col:str|None) -> pd.DataFrame:
-    """
-    Accepts data directly from the plate reader and returns it in a wide format df
-    """
-    p = Path(path)
-    if not p.is_file():
-        raise ValueError(f"File {p} does not exist")
-    if not path.endswith(".xlsx") and not path.endswith(".csv"):
-        raise ValueError(f"File {p} is not an Excel file")
+def _read_gen5_wide_kinetics_table(path_to_data: str | Path, header_row, last_row: int | None, start_col:str|int) -> pd.DataFrame:
+    """Accepts data directly from the plate reader and returns it in a wide format df
+         Args:
+             path_to_data (str | Path): path to data file
+             header_row (int): The row index of the header
+             last_row (int): The last row of the data file
+             start_col (str): The start column of the data file
 
-    if header_row is None:
-        header_row = 1
-        header_idx = 0
-    else:
-        header_idx = header_row -1
+           Returns:
+               pd.DataFrame: The wide data frame
+
+           Raises:
+               FileNotFoundError: If the data file does not exist.
+               ValueError: If the data file cannot be read.
+               KeyError: If the data file does not contain a column. """
+    if not Path(path_to_data).is_file():
+        raise FileNotFoundError(f"File {path_to_data} does not exist")
+    if not path_to_data.endswith(".xlsx") and not path_to_data.endswith(".csv"):
+        suffix = Path(path_to_data).suffix.lower()
+        raise ValueError(f"Unsupported file type: {suffix}. Expected .xlsx or .csv.")
+    header_idx = header_row -1
+
     if last_row is None:
-        if path.endswith(".xlsx"):
-            df = pd.read_excel(path, header = header_idx)
+        if path_to_data.endswith(".xlsx"):
+            df = pd.read_excel(path_to_data, header = header_idx)
         else:
-            df = pd.read_csv(path, header = header_idx)
+            df = pd.read_csv(path_to_data, header = header_idx)
     else:
         n_rows = last_row - header_row
-        if path.endswith(".xlsx"):
-            df = pd.read_excel(path, header = header_idx, nrows = n_rows)
+        if path_to_data.endswith(".xlsx"):
+            df = pd.read_excel(path_to_data, header = header_idx, nrows = n_rows)
         else:
-            df = pd.read_csv(path, header = header_idx, nrows = n_rows)
+            df = pd.read_csv(path_to_data, header = header_idx, nrows = n_rows)
 
-    if start_col is not None: # Optional - skip columns
+    if start_col !=0: # Optional - skip columns
         start_col = convert_excel_col_to_index(start_col)
         df = df.iloc[:, start_col:].copy()
 
@@ -73,70 +96,96 @@ def _read_wide_table(path:str, header_row:int|None, last_row:int|None, start_col
         raise KeyError("Required column 'Time' not found. "
             "Check header_row, start_col, or the input file format.")
     # Normalize format and data types
-    df["time"] = _normalize_time(df["Time"])
-    df = df.drop(columns=["Time"])
-    if "T° 600" in df.columns:
-        df = df.rename(columns={"T° 600": "temperature_c"})
-
+    df["Time"] = _normalize_time_to_timedelta(df["Time"])
+    #df = df.drop(columns=["Time"])
     return df
 
-def convert_wide_to_tidy(wide_df:pd.DataFrame, id_cols) -> pd.DataFrame:
-    """
-    Takes in a wide format dataframe and returns it in a tidy format
-    id_cols are the columns that contain info per time point, not per well
-    """
-    value_cols = [col for col in wide_df.columns if col not in id_cols]
-    tidy = wide_df.melt(
-        id_vars=id_cols,
+def _convert_wide_to_tidy(data:pd.DataFrame, timepoint_cols) -> pd.DataFrame:
+    """ Takes in a wide format dataframe and returns it in a tidy format
+         Args:
+             data (pd.DataFrame): The wide data frame
+             timepoint_cols (list[str]): columns that apply across the plate at each time point
+
+           Returns:
+               pd.DataFrame: The wide data frame
+
+           Raises:
+               ValueError: If the data file does not contain a column mentioned in timepoint_cols. """
+    for col in timepoint_cols:
+        if col not in data.columns:
+            raise ValueError(f"Column {col} does not exist.")
+    value_cols = [col for col in data.columns if col not in timepoint_cols]
+    tidy = data.melt(
+        id_vars=timepoint_cols,
         value_vars=value_cols,
         var_name="well",
         value_name="od"
     )
-    tidy = tidy.sort_values(by=["time", "well"])
+    tidy = tidy.sort_values(by=["Time", "well"])
     tidy.reset_index(drop=True, inplace=True)
     return tidy
 
-def _add_time_hours(df:pd.DataFrame) -> pd.DataFrame:
-    """ Takes in the newly formed tidy dataframe and add a column of time in hours"""
-    df = df.copy()
-    df["time"] = pd.to_timedelta(df["time"])
-    df["time_hours"] = df["time"].dt.total_seconds() / 3600.0
-
+def _normalize_column_names_gen5_wide(data:pd.DataFrame) -> pd.DataFrame:
+    """ Normalizes column names as found in a Gen5 wide kinetics table"""
+    df = data.copy()
+    for col in data.columns:
+        if col == "Time":
+            df = df.rename(columns={col: "time"})
+        elif col == "T° 600":
+            df = df.rename(columns={col: "temp_c"})
     return df
 
-def read_plate_measurements(path:str, header_row:int=None, last_row:int=None, start_col:str=None, reader_model="Synergy H1", data_format="wide", id_cols=("time", "temperature_c")) -> pd.DataFrame:
-    """
-    Taking raw measurement data from the reader and returning it in a tidy format with time_hours
-    """
+def _add_time_hours_from_timedelta(data:pd.DataFrame) -> pd.DataFrame:
+    """ Given a DataFrame with a time column that is already a pandas Timedelta (or convertible to one), add a numeric time_hours column.
+        Args:
+             data (pd.DataFrame): tidy format data frame with a time column that is a pandas Timedelta
+        Returns:
+            pd.DataFrame: tidy format data frame with an added time column in hours elapsed.  ”"""
+    data = data.copy()
+    data["time"] = pd.to_timedelta(data["time"])
+    data["time_hours"] = data["time"].dt.total_seconds() / 3600.0
+
+    return data
+
+def read_plate_measurements(reader_model:str, data_format:str, timepoint_cols:list|tuple, path_to_data:str, header_row:int=1, last_row:int|None=None, start_col:str=0) -> pd.DataFrame:
+    """ Reads the measurements from the plate and returns a tidy format data frame.
+    Args:
+        reader_model (str): The reader model
+        data_format (str): The data format
+        timepoint_cols (list[str]): columns that apply across the plate at each time point
+        path_to_data (str): The path to the data file
+        header_row (int): The row index of the header
+        last_row (int): The last row of the data file
+        start_col (str): The start column of the data file
+    Returns:
+        pd.DataFrame: The tidy format data frame
+    Raises:
+        ValueError: If the data format or reader model are not supported.  """
     if reader_model == "Synergy H1":
         if data_format == "wide":
-            df= convert_wide_to_tidy(_read_wide_table(path, header_row, last_row, start_col), id_cols)
-            df = _add_time_hours(df)
+            df= _convert_wide_to_tidy(_read_gen5_wide_kinetics_table(path_to_data, header_row, last_row, start_col), timepoint_cols)
+            df = _normalize_column_names_gen5_wide(df)
+            df = _add_time_hours_from_timedelta(df)
             return df
+        else:
+            raise ValueError(f"Unsupported data format: {reader_model}")
     else:
-        raise ValueError("Unknown reader model")
+        raise ValueError(f"Unsupported reader model: {reader_model}")
 
-def drop_col(df:pd.DataFrame, col_num:int) -> pd.DataFrame:
-    """ Takes in a DataFrame and a column. Returns a copy without the target column"""
-    df = df[df["well"].str[1:].astype(int) != col_num]
-    return df
+def _read_plate_layout_column_blocks(path:str) -> pd.DataFrame:
+    """ Read a column-block plate layout and return a tidy per-well design table.
 
-def drop_row(df:pd.DataFrame, row_letter:str) -> pd.DataFrame:
-    """ Takes in a DataFrame and a row. Returns a copy without the target row"""
-    row_letter = row_letter.strip().upper()
-    df = df[df["well"].str[0] != row_letter]
-    return df
+      The input must be a grid-style layout where:
+      - The first column contains plate row labels (A, B, C, ...).
+      - Condition columns are repeated per plate column (e.g. strain.1, strain.2).
+      - The first data row maps each condition block to a plate column number (1–12).
 
-def drop_well(df:pd.DataFrame, w:str) -> pd.DataFrame:
-    """ Takes in a DataFrame and a well. Returns a copy without the target well"""
-    df = df[df["well"] != w]
-    return df
+      Args:
+          path: Path to an Excel file or a DataFrame containing the plate layout.
 
-def parse_plate_design(path:str) -> pd.DataFrame:
-    """
-    Takes in a path to the design.
-    Returns a tidy design table: one row per well (A1, A2, ...), columns are conditions
-    """
+      Returns:
+          A tidy DataFrame with one row per well (e.g. A1, A2, ...) and one column
+          per condition. """
     if isinstance(path, pd.DataFrame):     # Load data. Optional only for testing
         raw = path
     else:
@@ -172,18 +221,55 @@ def parse_plate_design(path:str) -> pd.DataFrame:
             design.loc[len(design)] = [well_name] + values
     return design
 
+def read_plate_layout(path:str, data_format:str):
+    """Read a plate layout file and return a tidy per-well design table.
+
+     Args:
+         path: Path to a plate layout file or a DataFrame.
+         data_format: Plate layout format. Currently supported: "column_blocks".
+
+     Returns:
+         A tidy DataFrame with one row per well and one column per condition.
+
+     Raises:
+         ValueError: If the requested layout format is not supported. """
+    if data_format == "column_blocks":
+        return _read_plate_layout_column_blocks(path)
+    else:
+        raise ValueError(f"Unsupported format: {data_format}")
+
 def merge_measurements_and_conditions(measurements:pd.DataFrame, conditions:pd.DataFrame)-> pd.DataFrame:
-    """
-    Take in a measurement data frame (tidy) and a design data frame and merge them
-    """
+    """ Take in a measurement data frame (tidy) and a design data frame and merge them """
     full = measurements.merge(conditions, on="well", how="left")
     return full
 
-def read_flagged_wells(path: str, well_col: str = "well", desc_well:str="notes") -> pd.DataFrame:
-    """
-    Reads an Excel file listing wells to flag
-    Returns a DataFrame with a 'well' column and is_flagged column.
-    """
+def drop_col(df:pd.DataFrame, col_num:int) -> pd.DataFrame:
+    """ Takes in a DataFrame and a column. Returns a copy without the target column"""
+    df = df[df["well"].str[1:].astype(int) != col_num]
+    return df
+
+def drop_row(df:pd.DataFrame, row_letter:str) -> pd.DataFrame:
+    """ Takes in a DataFrame and a row. Returns a copy without the target row"""
+    row_letter = row_letter.strip().upper()
+    df = df[df["well"].str[0] != row_letter]
+    return df
+
+def drop_well(df:pd.DataFrame, w:str) -> pd.DataFrame:
+    """ Takes in a DataFrame and a well. Returns a copy without the target well"""
+    df = df[df["well"] != w]
+    return df
+
+def read_flagged_wells(path: str, well_col: str = "well", desc_well:str= "notes") -> pd.DataFrame:
+    """ Reads a table of flagged wells with their reasoning and returns it
+        Args:
+            path (str): Path to the data file
+            well_col (str): The name of the well column in the data file
+            desc_well (str): The name of the well description column in the data file
+        Returns:
+            pd.DataFrame: The tidy format data frame
+        Raises:
+            FileNotFoundError: If the flags file does not exist.
+            ValueError: If the data format is not supported. """
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"File {path} not found")
@@ -202,24 +288,53 @@ def read_flagged_wells(path: str, well_col: str = "well", desc_well:str="notes")
     flagged = flagged.sort_values(by=["well"]).reset_index(drop=True)
     return flagged
 
+# Create a good docking for the add_flag_column function
+
 def add_flag_column(measurements: pd.DataFrame, flagged_wells: pd.DataFrame|str, well_col: str = "well", desc_well:str="notes") -> pd.DataFrame:
     """
-    Adds a boolean column (default: is_flagged) to measurements based on whether 'well'
+    Adds a boolean column to measurements based on whether 'well'
     appears in flagged_wells['well'].
-    """
+         Args:
+            measurements (pd.DataFrame): DataFrame of measurements with a 'well' column.
+            flagged_wells (pd.DataFrame | str): DataFrame or path to file containing flagged wells.
+            well_col (str): Name of the well column in flagged_wells
+            desc_well (str): Name of the description column in flagged_wells
+         Returns:
+            pd.DataFrame: Copy of measurements with an added 'is_flagged' boolean column.
+    
+        """
     if isinstance(flagged_wells, pd.DataFrame):
         flags = flagged_wells.copy()
     elif isinstance(flagged_wells, str):
         flags = read_flagged_wells(flagged_wells, well_col, desc_well)
     else:
         raise ValueError("Flagged wells must be a DataFrame or a path")
+    measurements = measurements.copy()
     mask = measurements["well"].isin(flags["well"])
     measurements.insert(len(measurements.columns), 'is_flagged', mask)
     return measurements
 
 def drop_flags(measurements:pd.DataFrame, flags:str|pd.DataFrame|None=None)-> pd.DataFrame:
-    """
-    Can provide a list or a file of flags, and if you don't then it's the internal flags already stored in the measurements
+    """Remove flagged wells from a measurements table.
+    If ``flags`` is provided it can be one of:
+    - a path to an Excel/CSV file readable by :func:`read_flagged_wells` (string),
+    - a DataFrame containing a ``well`` column,
+    - a list of well names (strings).
+
+    Args:
+        measurements (pd.DataFrame): DataFrame of measurements with a ``well``
+            column and optionally an ``is_flagged`` boolean column.
+        flags (str | pd.DataFrame | list | None): Flags specification as
+            described above. If a path or DataFrame is provided, wells listed
+            in that source will be removed. If a list is provided it is
+            treated as case-insensitive well names to drop.
+
+    Returns:
+        pd.DataFrame: A copy of ``measurements`` with flagged wells removed.
+
+    Raises:
+        FileNotFoundError: If a provided file path does not exist (raised by
+            :func:`read_flagged_wells`).
     """
     # if no flags is provided, it's assumed that measurements already contains flags.
     # If flags are provided, they override existing flags
@@ -236,14 +351,16 @@ def drop_flags(measurements:pd.DataFrame, flags:str|pd.DataFrame|None=None)-> pd
         flags.sort()
         return measurements[measurements["well"].isin(flags)]
 
-def add_blank_value(df:pd.DataFrame, window:int=4, od_col:str="od") -> pd.DataFrame:
-    """
-    Takes in a dataframe and a window size and adds a blank value column.
+def with_blank_corrected_od(df:pd.DataFrame, window:int=4, od_col:str="od") -> pd.DataFrame:
+    """Add blank-corrected OD column.
 
-    :param df: data frame of measurements you want to blank
-    :param window: how many initial points should be used to construct the blank value
-    :param od_col: name of the od column to use
-    :return: returns the blanked data frame (copy)
+    Args:
+        df (pd.DataFrame): Measurements with 'well' and time columns.
+        window (int): Number of initial points to average.
+        od_col (str): Name of the OD column to use.
+
+    Returns:
+        pd.DataFrame: Copy with an added ``od_blank`` column.
     """
     df = df.sort_values(["well", "time_hours"]).copy()
     df["od_blank"] = np.nan
@@ -255,14 +372,17 @@ def add_blank_value(df:pd.DataFrame, window:int=4, od_col:str="od") -> pd.DataFr
     df = df.sort_values(["time", "well"]).reset_index(drop=True)
     return df
 
-def add_smoothed_od(df:pd.DataFrame, group_by: str|list[str]= "well", od:str = "od_blank",  window:int=5) -> pd.DataFrame:
-    """
+def with_smoothed_od(df:pd.DataFrame, group_by: str|list[str]= "well", od:str = "od_blank",  window:int=5) -> pd.DataFrame:
+    """Return a copy with an added ``od_smooth`` column.
 
-    :param df: Data frame of measurements you want to smooth
-    :param group_by: defaults to smoothing by well but can smooth by a condition(s) for averaging functionality
-    :param od: defaults to blank od but can be the mean of for averaging by condition
-    :param window: the mean of how many points to average over
-    :return: the smoothed data frame
+    Args:
+        df (pd.DataFrame): Measurements containing a ``well`` and time column.
+        group_by (str | list): Column(s) to group by when smoothing.
+        od (str): Name of the OD column to smooth (default: ``od_blank``).
+        window (int): Rolling window size.
+
+    Returns:
+        pd.DataFrame: Copy with an ``od_smooth`` column added.
     """
     if isinstance(group_by, list):
         sort_by = ["time_hours"] + group_by
@@ -280,17 +400,17 @@ def add_smoothed_od(df:pd.DataFrame, group_by: str|list[str]= "well", od:str = "
 
 def _calc_growth_rate(x:pd.Series, y:pd.Series, window:int, epsilon:float)-> np.array:
     """
-        
-    :param x: time series
-    :param y: OD series
-    :param window: window size for regression line
-    :param epsilon: what value is too small to be considered as biologically significance / actual measurement
-    :return: an array of the growth rates per time point
+    Args:
+        x (pd.Series): time series
+        y (pd.Series): OD series
+        window (int): window size for regression line
+        epsilon (float): what value is too small to be considered as biologically significance / actual
+    Return:
+        an array of the growth rates per time point
     """
     x = np.asarray(x, float)
     y = np.asarray(y, float)
     logy = np.log(np.where(y > epsilon, y, np.nan)) # Set value to NaN where OD is lower than epsilon so log is not taken, and take the log
-
     n = len(x)
     growth_rate = np.full(n, np.nan)
     half = window // 2  # how many points on each side of i
@@ -315,13 +435,17 @@ def _calc_growth_rate(x:pd.Series, y:pd.Series, window:int, epsilon:float)-> np.
     return growth_rate
 
 def add_growth_rate(df:pd.DataFrame, window:int=5, epsilon:float= 1e-10, group_by: str|list[str] = "well", od:str = "od_smooth") -> pd.DataFrame:
-    """
-    :param df: data frame to which you want to add growth rate        
-    :param window: across how many points to calculate regression line
-    :param epsilon: what value is too small to be considered as biologically significance / actual measurement
-    :param group_by: defaults to calculating by well but can calculate by a condition(s) for averaging functionality
-    :param od: defaults to od_smooth but can be the mean_od for averaging by condition
-    :return: the data frame with added growth rate
+    """Add a per-time-point growth rate column ('mu').
+
+    Args:
+        df (pd.DataFrame): Measurements containing a time column and grouping column(s).
+        window (int): Number of points used for the local regression window.
+        epsilon (float): Minimum OD value treated as valid for log transform.
+        group_by (str | list[str]): Column name(s) to group by when computing rates.
+        od (str): Name of the OD column to use for regression (default: ``od_smooth``).
+
+    Returns:
+        pd.DataFrame: Copy of ``df`` with an added ``mu`` column containing growth rates.
     """
     if isinstance(group_by, list):
         sort_by = ["time_hours"] + group_by
@@ -339,12 +463,16 @@ def add_growth_rate(df:pd.DataFrame, window:int=5, epsilon:float= 1e-10, group_b
     return df
 
 def estimate_early_od_threshold(df:pd.DataFrame, od_col:str="od_smooth", n_points:int=4, q:float=0.95)-> float:
-    """
-    :param df: data frame for which you want to calculate the early od threshold
-    :param od_col: column name of OD series
-    :param n_points: across how many of the initial points to calculate the early od threshold
-    :param q: above this percentile, the OD is considered to be valid
-    :return: the od threshold 
+    """Estimate an early-OD threshold from initial timepoints.
+
+    Args:
+        df (pd.DataFrame): Measurements containing 'well' and time columns.
+        od_col (str): Name of the OD column to use.
+        n_points (int): Number of initial points per well to consider.
+        q (float): Quantile; OD above this percentile is considered valid.
+
+    Returns:
+        float: Estimated OD threshold.
     """
     # subset: first n_points per well
     early = (df.sort_values(["well", "time_hours"]).groupby("well").head(n_points))
@@ -352,6 +480,26 @@ def estimate_early_od_threshold(df:pd.DataFrame, od_col:str="od_smooth", n_point
     return od_low
 
 def _calc_mu_max(x, y, w, threshold, epsilon=1e-10):
+    """
+    Find the maximum growth rate over sliding windows.
+
+    Fits linear regressions on log-transformed OD values across sliding
+    windows of width ``w`` and returns the largest slope (mu) found along
+    with a simple approximate 95% confidence interval using the reported
+    standard error from the best-fit window.
+
+    Args:
+        x (array-like): Time points.
+        y (array-like): OD measurements corresponding to ``x``.
+        w (int): Window size (number of consecutive points) to scan.
+        threshold (float): Minimum OD cutoff to consider a window valid.
+        epsilon (float): Small positive value used as a lower bound for the
+            cutoff to avoid log(0).
+
+    Returns:
+        tuple: (best_mu, mu_low, mu_high) where each is a float or ``np.nan``
+            when no valid window was found or the CI could not be computed.
+    """
     x = np.asarray(x, float)
     y = np.asarray(y, float)
 
@@ -385,7 +533,28 @@ def _calc_mu_max(x, y, w, threshold, epsilon=1e-10):
 
     return best_mu, mu_low, mu_high
 
-def mu_max_create(df, group_by = "well", window=5,od="od_smooth", threshold=None):
+def summarize_mu_max(df, group_by = "well", window=5,od="od_smooth", threshold=None):
+    """Estimate mu_max (max growth rate) per group.
+
+    Scans each group's OD time series with a sliding regression window to
+    find the maximum exponential growth rate (mu). Also converts the
+    reported slope into doubling time (tau) and returns simple 95%
+    confidence-interval endpoints for mu when available.
+
+    Args:
+        df (pd.DataFrame): Measurements containing a ``well`` (or grouping)
+            column and ``time_hours``.
+        group_by (str | list): Column(s) to group by when computing mu_max.
+        window (int): Window size (number of points) used for local fits.
+        od (str): Column name of the OD values to use.
+        threshold (float | None): If None, estimated from early timepoints;
+            otherwise used as the minimum OD cutoff for valid windows.
+
+    Returns:
+        pd.DataFrame: Table with columns ``['well','mu_max','mu_low',
+        'mu_high','tau','tau_low','tau_high']`` containing the results per
+        group.
+    """
     #group_by = group_by if isinstance(group_by, list) else [group_by]
     if threshold is None:
         threshold = estimate_early_od_threshold(df, od_col=od, n_points=window, q=0.95)

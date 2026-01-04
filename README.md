@@ -45,7 +45,7 @@ pip install -e .
 from wellflow import read_plate_measurements
 
 df = read_plate_measurements(
-    path="plate_reader_output.xlsx",
+    path_to_data="plate_reader_output.xlsx",
     header_row=2,
     last_row=150,
     start_col="C"
@@ -57,9 +57,9 @@ This returns a tidy dataframe with one row per (time, well) and a time_hours col
 ### 2. Add experimental design metadata
 
 ```python
-from wellflow import parse_plate_design, merge_measurements_and_conditions
+from wellflow import read_plate_design, merge_measurements_and_conditions
 
-design = parse_plate_design("plate_design.xlsx")
+design = read_plate_design("plate_design.xlsx")
 df = merge_measurements_and_conditions(df, design)
 ```
 

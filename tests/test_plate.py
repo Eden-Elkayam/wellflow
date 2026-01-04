@@ -63,22 +63,22 @@ class TestPlate(unittest.TestCase):
 
     def test_wide_to_tidy(self):
         before = self.rawData.copy()
-        after = wf.convert_wide_to_tidy(before, ["time", "temperature_c"])
+        after = wf._convert_wide_to_tidy(before, ["time", "temperature_c"])
         expected_after = self.tidy.sort_values(by=["time", "well"])
         pd.testing.assert_frame_equal(after, expected_after)
 
     def test_add_time_hours(self):
-        after = wf._add_time_hours(self.tidy)
+        after = wf._add_time_hours_from_timedelta(self.tidy)
         pd.testing.assert_frame_equal(after, self.tidy_with_time)
 
     def test_plate_design(self):
         raw = self.rawDesign.copy()
-        after = wf.parse_plate_design(raw)
+        after = wf.read_plate_design(raw)
         expected = self.design
         pd.testing.assert_frame_equal(after, expected)
 
     def test_blank(self):
-        actual = wf.add_blank_value(self.full_raw, 2)
+        actual = wf.with_blank_corrected_od(self.full_raw, 2)
         pd.testing.assert_frame_equal(actual,self.full_with_blanks)
 
     def test_smooth(self):
