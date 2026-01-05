@@ -37,3 +37,6 @@ htmlcov/
 *.xlsx
 *.csv
 *.tsv
+
+/examples/Cnecator_formate_source_test.ipynb
+/examples/EColi_knockout_test.ipynb

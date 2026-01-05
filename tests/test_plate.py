@@ -1,7 +1,8 @@
 import unittest
-from numpy.ma.testutils import assert_equal
-import plate
 import pandas as pd
+import numpy as np
+import wellflow.plate as wf
+
 
 class TestPlate(unittest.TestCase):
 
@@ -10,7 +11,7 @@ class TestPlate(unittest.TestCase):
                                      [pd.to_timedelta("0:30:00"),37,1.150,0.120,1.200,0.100],
                                      [pd.to_timedelta("0:45:00"),37,1.200,0.125,1.300,0.150,],
                                      [pd.to_timedelta("01:00:00"),37,1.300,0.130,1.152,0.095]],
-                                    columns=["time","temperature_c","A1","A2","B1","B2"])
+                                    columns=["Time","T° 600","A1","A2","B1","B2"])
         self.tidy = pd.DataFrame([[pd.to_timedelta("0:15:00"), 37, "A1", 1.1],
             [pd.to_timedelta("0:15:00"), 37, "A2", 0.1],
             [pd.to_timedelta("0:15:00"), 37, "B1", 1.0],
@@ -27,7 +28,7 @@ class TestPlate(unittest.TestCase):
             [pd.to_timedelta("1:00:00"), 37, "A2", 0.13],
             [pd.to_timedelta("1:00:00"), 37, "B1", 1.152],
             [pd.to_timedelta("1:00:00"), 37, "B2", 0.095],
-        ], columns=["time", "temperature_c", "well", "od"])
+        ], columns=["time", "temp_c", "well", "od"])
 
         self.tidy_with_time = self.tidy.copy()
         self.tidy_with_time["time_hours"] = [0.25,0.25,0.25,0.25, 0.5, 0.5, 0.5, 0.5, 0.75,0.75,0.75,0.75,1,1,1,1]
@@ -60,42 +61,63 @@ class TestPlate(unittest.TestCase):
         self.full_with_gr.sort_values(by=["time_hours", "well"], inplace=True)
         self.full_with_gr["mu"] = self.full_with_gr["mu"].round(6)
 
+
     def test_wide_to_tidy(self):
         before = self.rawData.copy()
-        after = plate._wide_to_tidy(before, ["time", "temperature_c"])
+        after = wf._convert_wide_to_tidy(before, ["Time", "T° 600"])
+        after = wf._normalize_column_names_gen5_wide(after)
         expected_after = self.tidy.sort_values(by=["time", "well"])
         pd.testing.assert_frame_equal(after, expected_after)
+        # additional sanity checks
+        self.assertListEqual(sorted(after.columns.tolist()), sorted(expected_after.columns.tolist()))
+        self.assertFalse(after.isnull().any().any())
+        self.assertTrue(np.issubdtype(after["od"].dtype, np.number))
 
     def test_add_time_hours(self):
-        after = plate._add_time_hours(self.tidy)
+        after = wf._add_time_hours_from_timedelta(self.tidy)
         pd.testing.assert_frame_equal(after, self.tidy_with_time)
+        # time_hours numeric and matches expected calculation
+        expected_hours = pd.to_timedelta(self.tidy["time"]).dt.total_seconds() / 3600.0
+        self.assertTrue(np.allclose(after["time_hours"].to_numpy(), expected_hours.to_numpy()))
 
     def test_plate_design(self):
         raw = self.rawDesign.copy()
-        after = plate.plate_design(raw)
+        after = wf.read_plate_layout(raw, data_format ="column_blocks")
         expected = self.design
         pd.testing.assert_frame_equal(after, expected)
+        # sanity checks
+        self.assertEqual(len(after), 4)
+        self.assertSetEqual(set(after["well"]), set(expected["well"]))
+        self.assertFalse(after.isnull().any().any())
 
     def test_blank(self):
-        actual = plate.add_blank_value(self.full_raw, 2)
-        pd.testing.assert_frame_equal(actual,self.full_with_blanks)
+        inp = self.full_raw.copy()
+        actual = wf.with_blank_corrected_od(inp, 2)
+        pd.testing.assert_frame_equal(actual, self.full_with_blanks)
+        # function should not mutate the input
+        pd.testing.assert_frame_equal(inp, self.full_raw)
+        # od_blank should be non-negative and numeric
+        self.assertTrue((actual["od_blank"] >= 0).all())
+        self.assertTrue(np.issubdtype(actual["od_blank"].dtype, np.number))
 
     def test_smooth(self):
-        actual = plate.add_smoothed_od(self.full_with_blanks,window=3)
+        inp = self.full_with_blanks.copy()
+        actual = wf.with_smoothed_od(inp, window=3)
         actual["od_smooth"] = actual["od_smooth"].round(6)
-        pd.testing.assert_frame_equal(actual,self.full_with_smooth)
+        # Only verify the function returns the exact manually-inserted values.
+        pd.testing.assert_frame_equal(actual, self.full_with_smooth)
+        # do not mutate the input
+        pd.testing.assert_frame_equal(inp, self.full_with_blanks)
 
     def test_mu(self):
-        actual = plate.add_growth_rate(self.full_with_smooth, window=3)
+        inp = self.full_with_smooth.copy()
+        actual = wf.add_growth_rate(inp, window=3)
         actual["mu"] = actual["mu"].round(6)
         pd.testing.assert_frame_equal(actual[["well","mu"]],self.full_with_gr[["well","mu"]])
-
-    # def test_max_mu(self):
-    #     actual = plate.add_max_growth_rate(self.full_with_gr, od_low=0)
-    #     b1_mu_max = actual.loc[actual["well"] == "B1", "mu_max"].unique()
-    #     assert_equal(float(b1_mu_max), 2.772589)
-    #
-
+        # ensure mu values are finite and reasonable
+        self.assertTrue(np.isfinite(actual["mu"]).all())
+        # spot-check a few values with tighter tolerance
+        np.testing.assert_allclose(actual["mu"].to_numpy(), self.full_with_gr["mu"].to_numpy(), rtol=1e-6, atol=1e-6)
 
 
 if __name__ == "__main__":
