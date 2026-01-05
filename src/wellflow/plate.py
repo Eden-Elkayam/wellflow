@@ -533,7 +533,7 @@ def _calc_mu_max(x, y, w, threshold, epsilon=1e-10):
 
     return best_mu, mu_low, mu_high
 
-def summarize_mu_max(df, group_by = "well", window=5,od="od_smooth", threshold=None):
+def summarize_mu_max(df, group_by = "well", window=5,od="od_blank", threshold=None):
     """Estimate mu_max (max growth rate) per group.
 
     Scans each group's OD time series with a sliding regression window to
