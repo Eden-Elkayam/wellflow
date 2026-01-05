@@ -305,6 +305,12 @@ def add_flag_column(measurements: pd.DataFrame, flagged_wells: pd.DataFrame|str,
         """
     if isinstance(flagged_wells, pd.DataFrame):
         flags = flagged_wells.copy()
+        # Normalize column names and values to match internal convention
+        if well_col != "well" or desc_well != "notes":
+            flags = flags.rename(columns={well_col: "well", desc_well: "notes"})
+        flags["well"] = flags["well"].astype(str).str.strip().str.upper()
+        flags = flags[flags["well"].ne("") & flags["well"].notna()]
+        flags = flags.drop_duplicates(subset=["well"]).sort_values(by=["well"]).reset_index(drop=True)
     elif isinstance(flagged_wells, str):
         flags = read_flagged_wells(flagged_wells, well_col, desc_well)
     else:
@@ -344,12 +350,14 @@ def drop_flags(measurements:pd.DataFrame, flags:str|pd.DataFrame|None=None)-> pd
     if isinstance(flags, str): # If flags wasn't a dataframe, make it one
         flags = read_flagged_wells(flags)
     if isinstance(flags, pd.DataFrame):
-        return measurements[measurements["well"].isin(flags["well"])]
+        # Keep only wells NOT present in the flags table (exclude flagged wells)
+        return measurements[~measurements["well"].isin(flags["well"])]
     if isinstance(flags, list):
+        # Normalize and exclude wells listed in the provided list
         flags = [i.upper() for i in flags]
         flags = list(set(flags))
         flags.sort()
-        return measurements[measurements["well"].isin(flags)]
+        return measurements[~measurements["well"].isin(flags)]
 
 def with_blank_corrected_od(df:pd.DataFrame, window:int=4, od_col:str="od") -> pd.DataFrame:
     """Add blank-corrected OD column.
@@ -390,7 +398,7 @@ def with_smoothed_od(df:pd.DataFrame, group_by: str|list[str]= "well", od:str = 
         sort_by =  ["time_hours"] + [group_by]
     df = df.copy()
     df["od_smooth"] = np.nan # Create a new column for the smooth data
-
+    df = df.sort_values(by=sort_by)
     for well, group in df.groupby(group_by):  # well = name (int), group = df for that well
         smoothed = (group[od].rolling(window, center=True, min_periods=1).mean()) # Replace value with the mean of window cells around it
         df.loc[group.index, "od_smooth"] = smoothed
@@ -533,7 +541,7 @@ def _calc_mu_max(x, y, w, threshold, epsilon=1e-10):
 
     return best_mu, mu_low, mu_high
 
-def summarize_mu_max(df, group_by = "well", window=5,od="od_blank", threshold=None):
+def summarize_mu_max(df, group_by = "well", window=5, od = "od_smooth", threshold=None):
     """Estimate mu_max (max growth rate) per group.
 
     Scans each group's OD time series with a sliding regression window to
@@ -562,14 +570,21 @@ def summarize_mu_max(df, group_by = "well", window=5,od="od_blank", threshold=No
     for key, group in df.groupby(group_by): # For each well/group to calc mu_max for
         group = group.sort_values("time_hours")
         best_mu, mu_low, mu_high = _calc_mu_max(group["time_hours"], group[od], window, threshold)
-        if best_mu is np.nan and mu_low is np.nan and mu_high is np.nan:
-            print(f"No meaningful growth found for this group:{key}")
+        # If no valid window was found, _calc_mu_max returns NaNs
+        if np.isnan(best_mu) and np.isnan(mu_low) and np.isnan(mu_high):
+            print(f"No meaningful growth found for this group: {key}")
         tau = np.log(2) / best_mu if best_mu > 0 else np.nan
         tau_2p5 = np.log(2) / mu_high if mu_high > 0 else np.nan  # fastest
         tau_97p5 = np.log(2) / mu_low if mu_low > 0 else np.nan  # slowest
 
         result.loc[len(result)] = [key, best_mu, mu_low, mu_high, tau, tau_2p5, tau_97p5]
     return result
+
+# Backwards-compatible aliases for older API names (module-level)
+add_blank_value = with_blank_corrected_od
+add_smoothed_od = with_smoothed_od
+mu_max_create = summarize_mu_max
+read_plate_design = read_plate_layout
 
 
 

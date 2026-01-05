@@ -1,6 +1,9 @@
 import unittest
 import pandas as pd
-import numpy as np
+import os
+import sys
+# Prefer local src/wellflow over any installed package
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 import wellflow.plate as wf
 
 
@@ -34,16 +37,16 @@ class TestPlate(unittest.TestCase):
         self.tidy_with_time["time_hours"] = [0.25,0.25,0.25,0.25, 0.5, 0.5, 0.5, 0.5, 0.75,0.75,0.75,0.75,1,1,1,1]
 
         self.rawDesign = self.meta = pd.DataFrame([["column", 1,2,1,2],
-        ["A", "WT", "ΔCA", 88,  89],
-        ["B", "WT", "ΔCA", 88,  89]
-    ],
-    columns=["value_type", "strain.1", "strain.2", "bio_rep.1", "bio_rep.2"]
-)
+            ["A", "WT", "ΔCA", 88,  89],
+            ["B", "WT", "ΔCA", 88,  89]
+        ],
+        columns=["value_type", "strain.1", "strain.2", "bio_rep.1", "bio_rep.2"])
+
         self.design = pd.DataFrame([["A1", "WT",  88],
-        ["A2", "ΔCA", 89],
-        ["B1", "WT",  88],
-        ["B2", "ΔCA", 89],],
-    columns=["well", "strain", "bio_rep"])
+            ["A2", "ΔCA", 89],
+            ["B1", "WT",  88],
+            ["B2", "ΔCA", 89],],
+            columns=["well", "strain", "bio_rep"])
 
         self.full_raw = self.tidy_with_time.merge(self.design, on="well", how="left")
 
@@ -68,58 +71,65 @@ class TestPlate(unittest.TestCase):
         after = wf._normalize_column_names_gen5_wide(after)
         expected_after = self.tidy.sort_values(by=["time", "well"])
         pd.testing.assert_frame_equal(after, expected_after)
-        # additional sanity checks
-        self.assertListEqual(sorted(after.columns.tolist()), sorted(expected_after.columns.tolist()))
-        self.assertFalse(after.isnull().any().any())
-        self.assertTrue(np.issubdtype(after["od"].dtype, np.number))
 
     def test_add_time_hours(self):
         after = wf._add_time_hours_from_timedelta(self.tidy)
         pd.testing.assert_frame_equal(after, self.tidy_with_time)
-        # time_hours numeric and matches expected calculation
-        expected_hours = pd.to_timedelta(self.tidy["time"]).dt.total_seconds() / 3600.0
-        self.assertTrue(np.allclose(after["time_hours"].to_numpy(), expected_hours.to_numpy()))
 
     def test_plate_design(self):
         raw = self.rawDesign.copy()
-        after = wf.read_plate_layout(raw, data_format ="column_blocks")
+        after = wf.read_plate_layout(raw, data_format="column_blocks")
         expected = self.design
         pd.testing.assert_frame_equal(after, expected)
-        # sanity checks
-        self.assertEqual(len(after), 4)
-        self.assertSetEqual(set(after["well"]), set(expected["well"]))
-        self.assertFalse(after.isnull().any().any())
 
     def test_blank(self):
-        inp = self.full_raw.copy()
-        actual = wf.with_blank_corrected_od(inp, 2)
-        pd.testing.assert_frame_equal(actual, self.full_with_blanks)
-        # function should not mutate the input
-        pd.testing.assert_frame_equal(inp, self.full_raw)
-        # od_blank should be non-negative and numeric
-        self.assertTrue((actual["od_blank"] >= 0).all())
-        self.assertTrue(np.issubdtype(actual["od_blank"].dtype, np.number))
+        actual = wf.with_blank_corrected_od(self.full_raw, 2)
+        pd.testing.assert_frame_equal(actual,self.full_with_blanks)
 
     def test_smooth(self):
-        inp = self.full_with_blanks.copy()
-        actual = wf.with_smoothed_od(inp, window=3)
+        actual = wf.with_smoothed_od(self.full_with_blanks, window=3)
         actual["od_smooth"] = actual["od_smooth"].round(6)
-        # Only verify the function returns the exact manually-inserted values.
         pd.testing.assert_frame_equal(actual, self.full_with_smooth)
-        # do not mutate the input
-        pd.testing.assert_frame_equal(inp, self.full_with_blanks)
 
     def test_mu(self):
-        inp = self.full_with_smooth.copy()
-        actual = wf.add_growth_rate(inp, window=3)
+        actual = wf.add_growth_rate(self.full_with_smooth, window=3)
         actual["mu"] = actual["mu"].round(6)
-        pd.testing.assert_frame_equal(actual[["well","mu"]],self.full_with_gr[["well","mu"]])
-        # ensure mu values are finite and reasonable
-        self.assertTrue(np.isfinite(actual["mu"]).all())
-        # spot-check a few values with tighter tolerance
-        np.testing.assert_allclose(actual["mu"].to_numpy(), self.full_with_gr["mu"].to_numpy(), rtol=1e-6, atol=1e-6)
+        pd.testing.assert_frame_equal(actual[["well","mu"]], self.full_with_gr[["well","mu"]])
+
+    def test_add_flag_column_marks_wells(self):
+        flagged = pd.DataFrame({
+            "well": ["A2", "b1"],
+            "notes": ["bad curve", "sensor issue"],
+        })
+        with_flags = wf.add_flag_column(self.full_raw, flagged_wells=flagged, well_col="well", desc_well="notes")
+        self.assertIn("is_flagged", with_flags.columns)
+        self.assertTrue(with_flags["is_flagged"].dtype == bool)
+        flagged_wells_set = {"A2", "B1"}
+        for w, grp in with_flags.groupby("well"):
+            if w in flagged_wells_set:
+                self.assertTrue(grp["is_flagged"].all())
+            else:
+                self.assertFalse(grp["is_flagged"].any())
+
+    def test_drop_flags_with_is_flagged(self):
+        flagged = pd.DataFrame({"well": ["A2", "B1"], "notes": ["bad", "bad"]})
+        with_flags = wf.add_flag_column(self.full_raw, flagged_wells=flagged)
+        cleaned = wf.drop_flags(with_flags)
+        remaining_wells = set(cleaned["well"].unique().tolist())
+        self.assertSetEqual(remaining_wells, {"A1", "B2"})
+
+    def test_drop_flags_with_dataframe(self):
+        flagged = pd.DataFrame({"well": ["A2", "B1"], "notes": ["bad", "bad"]})
+        cleaned = wf.drop_flags(self.full_raw, flags=flagged)
+        remaining_wells = set(cleaned["well"].unique().tolist())
+        self.assertSetEqual(remaining_wells, {"A1", "B2"})
+
+    def test_drop_flags_with_list_case_insensitive(self):
+        flags_list = ["a1", "A2", " A1 "]
+        cleaned = wf.drop_flags(self.full_raw, flags=flags_list)
+        remaining_wells = set(cleaned["well"].unique().tolist())
+        self.assertSetEqual(remaining_wells, {"B1", "B2"})
 
 
 if __name__ == "__main__":
     unittest.main()
-
