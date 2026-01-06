@@ -7,7 +7,7 @@ name = "wellflow"
 version = "0.1.0"
 description = "Plate reader growth-rate analysis utilities"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.9.6"
 authors = [
   { name="Eden Elkayam", email="eelkayam@rockefeller.edu" }
 ]
