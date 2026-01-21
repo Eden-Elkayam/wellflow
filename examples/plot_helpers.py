@@ -3,43 +3,9 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import pandas as pd
 
-def plot_seperatly(plot_by, color_by, df, x_col, y_col, x_label, y_label, title, marker=None, font_size=14, log = False):
-    facet_col = plot_by
-    df_plot = df
-
-    plt.rcParams.update({'font.size': font_size})
-    # Ensure expected columns exist
-    required_cols = {x_col, y_col, color_by, facet_col}
-    missing = required_cols - set(df_plot.columns)
-    if missing:
-        raise ValueError(f"Plot data is missing columns: {sorted(missing)}")
-
-    # Plot
-    g = sns.relplot(
-        data=df_plot,
-        x=x_col,
-        y=y_col,
-        hue=color_by,
-        col=facet_col,
-        kind="line",
-        marker=marker,
-        col_wrap=3,
-    )
-
-    g.set_axis_labels(x_label, y_label)
-    if log:
-        plt.yscale('log')
-
-    # Clean set titles to a consistent label
-    for ax in g.axes.flatten():
-        ax.set_title(ax.get_title().replace(f"{facet_col} = ", title))
-
-    plt.show()
-
-
 def plot_grouped(group_by, df, x_col, y_col, x_label, y_label, title,
                  plot_by=None, 
-                 marker=None, log=False, font_size=14, ax=None):
+                 marker=None, log=False, font_size=14, xlim=None, ylim=None):
   
     # Validate required columns
     required = {x_col, y_col, group_by}
@@ -53,8 +19,7 @@ def plot_grouped(group_by, df, x_col, y_col, x_label, y_label, title,
 
     # Prepare Axes
     created_fig = False
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(10, 6))
+    fig, ax = plt.subplots(figsize=(10, 6))
 
         # Draw individual series in one axes, colored by group_by
     sns.lineplot(
@@ -72,6 +37,10 @@ def plot_grouped(group_by, df, x_col, y_col, x_label, y_label, title,
 
     if log:
         ax.set_yscale('log')
+    if xlim is not None:
+        ax.set_xlim(xlim)
+    if ylim is not None:
+        ax.set_ylim(ylim)
 
     ax.set_xlabel(x_label)
     ax.set_ylabel(y_label)
@@ -84,7 +53,7 @@ def plot_grouped(group_by, df, x_col, y_col, x_label, y_label, title,
 
 def plot_separate_by_group(group_by, df, x_col, y_col, x_label, y_label, title,
                            plot_by=None, marker=None, log=False, font_size=14,
-                           col_wrap=3, sharey=True, palette=None):
+                           col_wrap=3, sharey=True, palette=None, xlim=None, ylim=None):
     # Validate required columns
     required = {x_col, y_col, group_by}
     if plot_by is not None:
@@ -146,6 +115,10 @@ def plot_separate_by_group(group_by, df, x_col, y_col, x_label, y_label, title,
 
         if log:
             ax_i.set_yscale('log')
+        if xlim is not None:
+            ax_i.set_xlim(xlim)
+        if ylim is not None:
+            ax_i.set_ylim(ylim)
 
         ax_i.set_xlabel(x_label)
         ax_i.set_ylabel(y_label)
