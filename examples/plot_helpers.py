@@ -1,4 +1,3 @@
-# Plot OD_mean vs time, faceted by bio rep and colored by strain
 import seaborn as sns
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -7,7 +6,7 @@ def plot_grouped(group_by, df, x_col, y_col, x_label, y_label, title,
                  plot_by=None, 
                  marker=None, log=False, font_size=14, xlim=None, ylim=None):
   
-    # Validate required columns
+    # validate required columns
     required = {x_col, y_col, group_by}
     if plot_by is not None:
         required.add(plot_by)
@@ -17,11 +16,11 @@ def plot_grouped(group_by, df, x_col, y_col, x_label, y_label, title,
 
     plt.rcParams.update({'font.size': font_size})
 
-    # Prepare Axes
+    # prepare axes
     created_fig = False
     fig, ax = plt.subplots(figsize=(10, 6))
 
-        # Draw individual series in one axes, colored by group_by
+        #  individual series in one axes, colored by group_by
     sns.lineplot(
         data=df,
         x=x_col,
@@ -54,7 +53,7 @@ def plot_grouped(group_by, df, x_col, y_col, x_label, y_label, title,
 def plot_separate_by_group(group_by, df, x_col, y_col, x_label, y_label, title,
                            plot_by=None, marker=None, log=False, font_size=14,
                            col_wrap=3, sharey=True, palette=None, xlim=None, ylim=None):
-    # Validate required columns
+    # validate required columns
     required = {x_col, y_col, group_by}
     if plot_by is not None:
         required.add(plot_by)
@@ -64,7 +63,6 @@ def plot_separate_by_group(group_by, df, x_col, y_col, x_label, y_label, title,
 
     plt.rcParams.update({'font.size': font_size})
 
-    # Determine groups and grid size
     levels = list(pd.unique(df[group_by]))
     n = len(levels)
     if n == 0:
@@ -75,24 +73,20 @@ def plot_separate_by_group(group_by, df, x_col, y_col, x_label, y_label, title,
     rows = math.ceil(n / cols)
 
     fig, axes = plt.subplots(rows, cols, figsize=(5 * cols, 4 * rows), sharey=sharey)
-    # Normalize axes to 1D list
     if isinstance(axes, (list, tuple)):
         axes_list = list(axes)
     else:
-        # axes can be ndarray or a single Axes
         try:
             axes_list = list(axes.flat)
         except Exception:
             axes_list = [axes]
 
-    # Build palette mapping
     if palette is None:
         base_palette = sns.color_palette(n_colors=n)
         palette_map = {lvl: base_palette[i % len(base_palette)] for i, lvl in enumerate(levels)}
     elif isinstance(palette, dict):
         palette_map = palette
     else:
-        # list-like palette provided; map by index order
         palette_map = {lvl: palette[i % len(palette)] for i, lvl in enumerate(levels)}
 
     # Plot each group's lines separately
@@ -129,7 +123,6 @@ def plot_separate_by_group(group_by, df, x_col, y_col, x_label, y_label, title,
         axes_list[j].set_visible(False)
 
     # One overall title
-    # Reserve space at the top so the suptitle doesn't overlap subplot titles
     fig.tight_layout(rect=[0, 0, 1, 0.93])
     fig.suptitle(title, y=0.995)
     plt.show()
